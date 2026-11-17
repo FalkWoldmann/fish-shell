@@ -327,7 +327,6 @@ name = "fish"
 version = "4.9.3"
 dependencies = [
  "assert_matches",
- "cc",
  "cfg-if",
  "fish-build-helper",
  "fish-build-man-pages",

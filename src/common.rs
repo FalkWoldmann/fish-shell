@@ -25,6 +25,12 @@ pub fn shell_modes() -> MutexGuard<'static, Termios> {
     crate::reader::SHELL_MODES.lock().unwrap()
 }
 
+/// Look up a libc function which only some systems, or only some versions of a system, have.
+/// The caller transmutes the result to the function's type.
+pub fn dlsym(name: &std::ffi::CStr) -> Option<std::ptr::NonNull<libc::c_void>> {
+    std::ptr::NonNull::new(unsafe { libc::dlsym(libc::RTLD_DEFAULT, name.as_ptr()) })
+}
+
 /// Character representing an omitted newline at the end of text.
 pub fn get_omitted_newline_str() -> &'static str {
     OMITTED_NEWLINE_STR.load()

@@ -116,33 +116,34 @@ unsafe fn lconv_to_locale(lconv: &libc::lconv) -> Locale {
 }
 
 /// Read the numeric locale, or None on any failure.
-#[cfg(have_localeconv_l)]
 unsafe fn read_locale() -> Option<Locale> {
-    unsafe extern "C" {
-        unsafe fn localeconv_l(loc: libc::locale_t) -> *const libc::lconv;
+    // Not every libc has localeconv_l (glibc and musl don't), so look it up at runtime.
+    // The libc crate has no newlocale for Haiku.
+    #[cfg(not(target_os = "haiku"))]
+    if let Some(localeconv_l) = crate::common::dlsym(c"localeconv_l") {
+        type LocaleconvL = unsafe extern "C" fn(libc::locale_t) -> *const libc::lconv;
+        let localeconv_l: LocaleconvL = unsafe { std::mem::transmute(localeconv_l) };
+
+        // We create a new locale (pass 0 locale_t base)
+        // and pass no "locale", so everything else is taken from the environment.
+        // This is fine because we're only using this for numbers.
+        let loc =
+            unsafe { libc::newlocale(libc::LC_NUMERIC_MASK, c"".as_ptr(), 0 as libc::locale_t) };
+        if loc.is_null() {
+            return None;
+        }
+
+        let lconv = unsafe { localeconv_l(loc) };
+        let result = if lconv.is_null() {
+            None
+        } else {
+            Some(unsafe { lconv_to_locale(&*lconv) })
+        };
+
+        unsafe { libc::freelocale(loc) };
+        return result;
     }
 
-    // We create a new locale (pass 0 locale_t base)
-    // and pass no "locale", so everything else is taken from the environment.
-    // This is fine because we're only using this for numbers.
-    let loc = unsafe { libc::newlocale(libc::LC_NUMERIC_MASK, c"".as_ptr(), 0 as libc::locale_t) };
-    if loc.is_null() {
-        return None;
-    }
-
-    let lconv = unsafe { localeconv_l(loc) };
-    let result = if lconv.is_null() {
-        None
-    } else {
-        Some(unsafe { lconv_to_locale(&*lconv) })
-    };
-
-    unsafe { libc::freelocale(loc) };
-    result
-}
-
-#[cfg(not(have_localeconv_l))]
-unsafe fn read_locale() -> Option<Locale> {
     // Bleh, we have to go through localeconv, which races with setlocale.
     // TODO: There has to be a better way to do this.
     let _guard = LOCALE_LOCK.lock().unwrap();

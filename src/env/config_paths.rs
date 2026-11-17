@@ -176,9 +176,10 @@ pub fn get_fish_path() -> &'static FishPath {
 fn compute_fish_path() -> FishPath {
     use FishPath::*;
 
-    #[cfg(have_getexecpath)]
-    if let Some(path) = getexecpath() {
-        return Absolute(path);
+    if cfg!(target_os = "openbsd") {
+        if let Some(path) = getexecpath() {
+            return Absolute(path);
+        }
     }
 
     let Ok(mut path) = std::env::current_exe() else {
@@ -205,11 +206,11 @@ fn compute_fish_path() -> FishPath {
     Absolute(path)
 }
 
-#[cfg(have_getexecpath)]
+/// Not every OpenBSD version has getexecpath, so look it up at runtime.
 fn getexecpath() -> Option<PathBuf> {
-    unsafe extern "C" {
-        unsafe fn getexecpath(buf: *mut libc::c_char, bufsize: libc::size_t) -> libc::c_int;
-    }
+    type Getexecpath = unsafe extern "C" fn(*mut libc::c_char, libc::size_t) -> libc::c_int;
+    let getexecpath: Getexecpath =
+        unsafe { std::mem::transmute(crate::common::dlsym(c"getexecpath")?) };
 
     let mut buf = [0 as libc::c_char; libc::PATH_MAX as usize];
     if unsafe { getexecpath(buf.as_mut_ptr(), buf.len()) } != 0 {

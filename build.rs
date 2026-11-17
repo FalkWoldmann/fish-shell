@@ -2,7 +2,6 @@ use fish_build_helper::{
     env_var, fish_build_dir, target_os, target_os_is_apple, target_os_is_bsd, target_os_is_cygwin,
     workspace_root,
 };
-use rsconf::Target;
 use std::path::{Path, PathBuf};
 
 fn main() {
@@ -40,11 +39,7 @@ fn main() {
 
     fish_build_helper::rebuild_if_embedded_path_changed("share");
 
-    let build = cc::Build::new();
-    let mut target = Target::new_from(build).unwrap();
-    // Keep verbose mode on until we've ironed out rust build script stuff
-    target.set_verbose(true);
-    detect_cfgs(&mut target);
+    detect_cfgs();
 
     #[cfg(all(target_env = "gnu", target_feature = "crt-static"))]
     compile_error!(
@@ -52,8 +47,8 @@ fn main() {
     );
 }
 
-/// Check target system support for certain functionality dynamically when the build is invoked,
-/// without their having to be explicitly enabled in the `cargo build --features xxx` invocation.
+/// Enable cfgs for functionality that only some target systems have, without their having to be
+/// explicitly enabled in the `cargo build --features xxx` invocation.
 ///
 /// We are using [`rsconf::enable_cfg()`] instead of [`rsconf::enable_feature()`] as rust features
 /// should be used for things that a user can/would reasonably enable or disable to tweak or coerce
@@ -63,41 +58,53 @@ fn main() {
 /// our own codebase, but [can't be used to pull in dependencies](0) even if they're gated (in
 /// `Cargo.toml`) behind a feature we just enabled.
 ///
+/// Everything here is decided from the target OS alone, so that the build doesn't need a C
+/// compiler. Functions which only some versions of an OS have are looked up at runtime instead,
+/// see `dlsym()` in `src/common.rs`.
+///
 /// [0]: https://github.com/rust-lang/cargo/issues/5499
-fn detect_cfgs(target: &mut Target) {
-    for (name, handler) in [
-        // Ignore the first entry, it just sets up the type inference.
-        ("", &(|_: &Target| false) as &dyn Fn(&Target) -> bool),
-        ("apple", &(|_| target_os_is_apple())),
-        ("bsd", &(|_| target_os_is_bsd())),
-        ("cygwin", &(|_| target_os_is_cygwin())),
-        ("have_eventfd", &|target| target.has_header("sys/eventfd.h")),
-        ("have_localeconv_l", &|target| {
-            target.has_symbol("localeconv_l")
-        }),
-        ("have_getexecpath", &|target| {
-            target_os().as_str() == "openbsd" && target.has_symbol("getexecpath")
-        }),
-        ("have_posix_spawn", &|target| {
-            if matches!(target_os().as_str(), "openbsd" | "android") {
-                // OpenBSD's posix_spawn returns status 127 instead of erroring with ENOEXEC when faced with a
-                // shebang-less script. Disable posix_spawn on OpenBSD.
-                //
-                // Android is broken for unclear reasons
-                false
-            } else {
-                target.has_header("spawn.h")
-            }
-        }),
-        ("small_main_stack", &has_small_stack),
-        ("solarish", &|_target| {
-            matches!(target_os().as_str(), "illumos" | "solaris")
-        }),
-        ("using_cmake", &|_| {
-            option_env!("FISH_CMAKE_BINARY_DIR").is_some()
-        }),
+fn detect_cfgs() {
+    let os = target_os();
+    let os = os.as_str();
+    for (name, enabled) in [
+        ("apple", target_os_is_apple()),
+        ("bsd", target_os_is_bsd()),
+        ("cygwin", target_os_is_cygwin()),
+        (
+            "have_eventfd",
+            // The targets where the libc crate has eventfd().
+            matches!(os, "android" | "freebsd" | "illumos" | "linux" | "netbsd"),
+        ),
+        (
+            "have_posix_spawn",
+            // The targets where the libc crate has posix_spawn(), except for two:
+            //
+            // OpenBSD's posix_spawn returns status 127 instead of erroring with ENOEXEC when faced
+            // with a shebang-less script.
+            //
+            // Android is broken for unclear reasons.
+            target_os_is_apple()
+                || matches!(
+                    os,
+                    "cygwin"
+                        | "dragonfly"
+                        | "freebsd"
+                        | "haiku"
+                        | "hurd"
+                        | "illumos"
+                        | "linux"
+                        | "netbsd"
+                        | "solaris"
+                ),
+        ),
+        ("small_main_stack", has_small_stack()),
+        ("solarish", matches!(os, "illumos" | "solaris")),
+        (
+            "using_cmake",
+            option_env!("FISH_CMAKE_BINARY_DIR").is_some(),
+        ),
     ] {
-        rsconf::declare_cfg(name, handler(target));
+        rsconf::declare_cfg(name, enabled);
     }
 }
 
@@ -107,7 +114,7 @@ fn detect_cfgs(target: &mut Target) {
 ///
 /// 0.5 MiB is small enough that we'd have to drastically reduce MAX_STACK_DEPTH to less than 10, so
 /// we instead use a workaround to increase the main thread size.
-fn has_small_stack(_: &Target) -> bool {
+fn has_small_stack() -> bool {
     #[cfg(not(any(target_os = "ios", target_os = "macos", target_os = "netbsd")))]
     return false;
 
